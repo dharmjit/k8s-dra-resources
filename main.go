@@ -35,7 +35,8 @@ func NewDRAClient(kubeconfigPath string) (DRAClient, error) {
 
 	return &draClient{
 		typedClient: typedClient,
-	}, nil
+	},
+nil
 }
 
 func (c *draClient) GetResourceSlices(ctx context.Context) ([]resourcev1beta1.ResourceSlice, error) {
@@ -60,6 +61,7 @@ func (c *draClient) GetResourceClaims(ctx context.Context) ([]resourcev1beta1.Re
 
 func main() {
 	kubeconfig := flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "path to the kubeconfig file")
+	aggregatedView := flag.Bool("aggregated-view", false, "display an aggregated view of devices per node per driver")
 	flag.Parse()
 
 	if *kubeconfig == "" {
@@ -72,15 +74,88 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := displayResourceSlices(client); err != nil {
-		fmt.Fprintf(os.Stderr, "Error displaying ResourceSlices: %v\n", err)
-		os.Exit(1)
+	if *aggregatedView {
+		if err := displayAggregatedView(client); err != nil {
+			fmt.Fprintf(os.Stderr, "Error displaying aggregated view: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		if err := displayResourceSlices(client); err != nil {
+			fmt.Fprintf(os.Stderr, "Error displaying ResourceSlices: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	fmt.Println("\n------------------------------\n")
 	fmt.Println("Note: This tool displays allocation status based on ResourceClaims.")
 	fmt.Println("Total and available capacities are not directly exposed in resource.k8s.io/v1beta1.Device struct.")
 }
+
+// AggregatedStats stores the counts of allocated and available devices.
+type AggregatedStats struct {
+	Allocated int
+	Available int
+}
+
+func displayAggregatedView(client DRAClient) error {
+	fmt.Println("Fetching ResourceSlices and ResourceClaims for aggregated view...")
+	resourceSlices, err := client.GetResourceSlices(context.Background())
+	if err != nil {
+		return err
+	}
+
+	resourceClaims, err := client.GetResourceClaims(context.Background())
+	if err != nil {
+		return err
+	}
+
+	// Map to store allocated devices
+	allocatedDevices := make(map[string]map[string]bool)
+	for _, rc := range resourceClaims {
+		if rc.Status.Allocation != nil && rc.Status.Allocation.Devices.Results != nil {
+			for _, ads := range rc.Status.Allocation.Devices.Results {
+				sliceIdentifier := fmt.Sprintf("%s-%s", ads.Driver, ads.Pool)
+				if _, ok := allocatedDevices[sliceIdentifier]; !ok {
+					allocatedDevices[sliceIdentifier] = make(map[string]bool)
+				}
+				allocatedDevices[sliceIdentifier][ads.Device] = true
+			}
+		}
+	}
+
+	// Map to store aggregated stats: NodeName -> DriverName -> AggregatedStats
+	aggregatedStats := make(map[string]map[string]*AggregatedStats)
+	for _, rs := range resourceSlices {
+		if _, ok := aggregatedStats[rs.Spec.NodeName]; !ok {
+			aggregatedStats[rs.Spec.NodeName] = make(map[string]*AggregatedStats)
+		}
+		if _, ok := aggregatedStats[rs.Spec.NodeName][rs.Spec.Driver]; !ok {
+			aggregatedStats[rs.Spec.NodeName][rs.Spec.Driver] = &AggregatedStats{}
+		}
+
+		sliceIdentifier := fmt.Sprintf("%s-%s", rs.Spec.Driver, rs.Spec.Pool.Name)
+		for _, dev := range rs.Spec.Devices {
+			if allocatedDevices[sliceIdentifier][dev.Name] {
+				aggregatedStats[rs.Spec.NodeName][rs.Spec.Driver].Allocated++
+			} else {
+				aggregatedStats[rs.Spec.NodeName][rs.Spec.Driver].Available++
+			}
+		}
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	defer w.Flush()
+
+	fmt.Fprintln(w, "NODE\tDRIVER\tALLOCATED\tAVAILABLE")
+	for node, drivers := range aggregatedStats {
+		for driver, stats := range drivers {
+			fmt.Fprintf(w, "%s\t%s\t%d\t%d\n", node, driver, stats.Allocated, stats.Available)
+		}
+	}
+
+	return nil
+}
+
 
 func displayResourceSlices(client DRAClient) error {
 	fmt.Println("Fetching ResourceSlices and ResourceClaims...")

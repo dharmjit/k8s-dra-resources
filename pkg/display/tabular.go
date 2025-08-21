@@ -37,33 +37,18 @@ func DisplayTabularInfo(client resourceClient.ResourceClient) error {
 	fmt.Fprintln(w, "NODE\tROLE\tCPU(TOTAL/AVAIL)\tMEMORY(TOTAL/AVAIL GiB)\tSTORAGE(TOTAL/AVAIL)\tDEVICES")
 
 	for _, nodeInfo := range nodeInfoList {
-		// Aggregate device info
-		deviceCounts := make(map[string]map[string]int) // driver -> status -> count
-		for _, dev := range nodeInfo.Devices {
-			deviceAndMemoryName := dev.ProductName
-			if !dev.Memory.IsZero() {
-				deviceAndMemoryName += "+" + dev.Memory.String()
-			}
-			if _, ok := deviceCounts[deviceAndMemoryName]; !ok {
-				deviceCounts[deviceAndMemoryName] = make(map[string]int)
-			}
-			deviceCounts[deviceAndMemoryName]["total"]++
-			if dev.Status == "Allocated" {
-				deviceCounts[deviceAndMemoryName]["allocated"]++
-			}
-		}
-
 		// Create a string for the devices column
 		var deviceString string
-		if len(deviceCounts) == 0 {
+		if len(nodeInfo.Devices) == 0 {
 			deviceString = "None"
 		} else {
 			var parts []string
-			for driver, counts := range deviceCounts {
-				total := counts["total"]
-				allocated := counts["allocated"]
-				available := total - allocated
-				parts = append(parts, fmt.Sprintf("%s: %d total, %d available", driver, total, available))
+			for _, dev := range nodeInfo.Devices {
+				deviceAndMemoryName := dev.ProductName
+				if !dev.Memory.IsZero() {
+					deviceAndMemoryName += "+" + formatMemoryAsGiB(dev.Memory)
+				}
+				parts = append(parts, fmt.Sprintf("%s: %d total, %d available", deviceAndMemoryName, dev.TotalCount, dev.AvailableCount))
 			}
 			deviceString = strings.Join(parts, "; ")
 		}

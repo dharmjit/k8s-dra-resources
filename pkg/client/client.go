@@ -119,6 +119,8 @@ func (c *resourceClient) GetK8sResources(ctx context.Context) ([]*types.NodeInfo
 	}
 
 	// Populate devices for each node
+	deviceMap := make(map[string]types.Device) // key is productName
+
 	for _, rs := range resourceSlices {
 		nodeInfo, ok := nodeMap[rs.Spec.NodeName]
 		if !ok {
@@ -127,16 +129,6 @@ func (c *resourceClient) GetK8sResources(ctx context.Context) ([]*types.NodeInfo
 
 		sliceIdentifier := fmt.Sprintf("%s-%s", rs.Spec.Driver, rs.Spec.Pool.Name)
 		for _, dev := range rs.Spec.Devices {
-			status := "Available"
-			if allocatedDevices[sliceIdentifier][dev.Name] {
-				status = "Allocated"
-			}
-			var memory resource.Quantity
-			if dev.Basic != nil {
-				if mem, ok := dev.Basic.Capacity["memory"]; ok {
-					memory = mem.Value
-				}
-			}
 
 			var productName string
 			productName = rs.Spec.Driver
@@ -147,11 +139,41 @@ func (c *resourceClient) GetK8sResources(ctx context.Context) ([]*types.NodeInfo
 					}
 				}
 			}
-			nodeInfo.Devices = append(nodeInfo.Devices, types.Device{
-				ProductName: productName,
-				Memory:      memory,
-				Status:      status,
-			})
+
+			var memory resource.Quantity
+			if dev.Basic != nil {
+				if mem, ok := dev.Basic.Capacity["memory"]; ok {
+					memory = mem.Value
+				}
+			}
+
+			// if productName is not in deviceMap, initialize it otherwise increment the TotalCount and AvailableCount by 1
+			if _, ok := deviceMap[productName]; !ok {
+				deviceMap[productName] = types.Device{
+					ProductName:    productName,
+					TotalCount:     1,
+					AvailableCount: 1,
+					Memory:         memory,
+				}
+			} else {
+				dev := deviceMap[productName]
+				dev.TotalCount++
+				dev.AvailableCount++
+				deviceMap[productName] = dev
+			}
+
+			// if the device is allocated, reduce the available count by 1
+			if allocatedDevices[sliceIdentifier][dev.Name] {
+				dev := deviceMap[productName]
+				if dev.AvailableCount > 0 {
+					dev.AvailableCount--
+				}
+				deviceMap[productName] = dev
+			}
+		}
+		// Iterate over the deviceMap to populate nodeInfo.Devices
+		for _, dev := range deviceMap {
+			nodeInfo.Devices = append(nodeInfo.Devices, dev)
 		}
 	}
 

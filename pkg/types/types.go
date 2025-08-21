@@ -22,7 +22,8 @@ type NodeCapacity struct {
 
 // Device contains the relevant information for a device.
 type Device struct {
-	ProductName string
-	Memory      resource.Quantity
-	Status      string
+	ProductName    string
+	TotalCount     int
+	AvailableCount int
+	Memory         resource.Quantity
 }

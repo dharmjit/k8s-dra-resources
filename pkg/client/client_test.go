@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -43,6 +44,24 @@ func TestGetK8sResources(t *testing.T) {
 						},
 					},
 				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   "node-2",
+						Labels: map[string]string{"node-role.kubernetes.io/worker": ""},
+					},
+					Status: corev1.NodeStatus{
+						Capacity: corev1.ResourceList{
+							corev1.ResourceCPU:     resource.MustParse("4"),
+							corev1.ResourceMemory:  resource.MustParse("16Gi"),
+							corev1.ResourceStorage: resource.MustParse("100Gi"),
+						},
+						Allocatable: corev1.ResourceList{
+							corev1.ResourceCPU:     resource.MustParse("3"),
+							corev1.ResourceMemory:  resource.MustParse("14Gi"),
+							corev1.ResourceStorage: resource.MustParse("90Gi"),
+						},
+					},
+				},
 			},
 			resourceSlices: []resourcev1beta1.ResourceSlice{
 				{
@@ -52,6 +71,40 @@ func TestGetK8sResources(t *testing.T) {
 						Driver:   "gpu.nvidia.com",
 						Pool: resourcev1beta1.ResourcePool{
 							Name: "pool-a",
+						},
+						Devices: []resourcev1beta1.Device{
+							{
+								Name: "gpu-0",
+								Basic: &resourcev1beta1.BasicDevice{
+									Attributes: map[resourcev1beta1.QualifiedName]resourcev1beta1.DeviceAttribute{
+										"productName": {StringValue: new(string)},
+									},
+									Capacity: map[resourcev1beta1.QualifiedName]resourcev1beta1.DeviceCapacity{
+										"memory": {Value: resource.MustParse("8Gi")},
+									},
+								},
+							},
+							{
+								Name: "gpu-1",
+								Basic: &resourcev1beta1.BasicDevice{
+									Attributes: map[resourcev1beta1.QualifiedName]resourcev1beta1.DeviceAttribute{
+										"productName": {StringValue: new(string)},
+									},
+									Capacity: map[resourcev1beta1.QualifiedName]resourcev1beta1.DeviceCapacity{
+										"memory": {Value: resource.MustParse("8Gi")},
+									},
+								},
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "slice-2"},
+					Spec: resourcev1beta1.ResourceSliceSpec{
+						NodeName: "node-2",
+						Driver:   "gpu.nvidia.com",
+						Pool: resourcev1beta1.ResourcePool{
+							Name: "pool-b",
 						},
 						Devices: []resourcev1beta1.Device{
 							{
@@ -119,6 +172,26 @@ func TestGetK8sResources(t *testing.T) {
 						},
 					},
 				},
+				{
+					NodeName: "node-2",
+					NodeRole: "worker",
+					NodeCapacity: types.NodeCapacity{
+						TotalCPU:         resource.MustParse("4"),
+						AvailableCPU:     resource.MustParse("3"),
+						TotalMemory:      resource.MustParse("16Gi"),
+						AvailableMemory:  resource.MustParse("14Gi"),
+						TotalStorage:     resource.MustParse("100Gi"),
+						AvailableStorage: resource.MustParse("90Gi"),
+					},
+					Devices: []types.Device{
+						{
+							ProductName:    "NVIDIA GeForce RTX 5090",
+							TotalCount:     2,
+							AvailableCount: 2,
+							Memory:         resource.MustParse("8Gi"),
+						},
+					},
+				},
 			},
 		},
 	}
@@ -162,6 +235,19 @@ func TestGetK8sResources(t *testing.T) {
 				t.Fatalf("GetK8sResources() error = %v, expectErr %v", err, tc.expectErr)
 			}
 
+			fmt.Printf("Node Details:\n")
+			for _, node := range got {
+				fmt.Printf("Node Name: %s\n", node.NodeName)
+				fmt.Printf("Node Role: %s\n", node.NodeRole)
+				fmt.Printf("Node Capacity: %+v\n", node.NodeCapacity)
+				fmt.Printf("Devices:\n")
+				for _, dev := range node.Devices {
+					fmt.Printf(" - Product Name: %s\n", dev.ProductName)
+					fmt.Printf("   Total Count: %d\n", dev.TotalCount)
+					fmt.Printf("   Available Count: %d\n", dev.AvailableCount)
+					fmt.Printf("   Memory: %s\n", dev.Memory.String())
+				}
+			}
 			if !reflect.DeepEqual(got, tc.expected) {
 				t.Errorf("GetK8sResources()\nGot:  %+v\nWant: %+v", got, tc.expected)
 			}

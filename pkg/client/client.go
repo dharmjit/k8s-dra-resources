@@ -119,13 +119,13 @@ func (c *resourceClient) GetK8sResources(ctx context.Context) ([]*types.NodeInfo
 	}
 
 	// Populate devices for each node
-	deviceMap := make(map[string]types.Device) // key is productName
-
 	for _, rs := range resourceSlices {
 		nodeInfo, ok := nodeMap[rs.Spec.NodeName]
 		if !ok {
 			continue
 		}
+
+		deviceMap := make(map[string]types.Device) // key is productName
 
 		sliceIdentifier := fmt.Sprintf("%s-%s", rs.Spec.Driver, rs.Spec.Pool.Name)
 		for _, dev := range rs.Spec.Devices {

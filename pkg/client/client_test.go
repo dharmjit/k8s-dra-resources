@@ -2,11 +2,11 @@ package client
 
 import (
 	"context"
-	"fmt"
-	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/dharmjit/k8s-dra-resources/pkg/types"
+	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1beta1 "k8s.io/api/resource/v1beta1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -18,6 +18,7 @@ func TestGetK8sResources(t *testing.T) {
 	testCases := []struct {
 		name           string
 		nodes          []corev1.Node
+		pods           []corev1.Pod
 		resourceSlices []resourcev1beta1.ResourceSlice
 		resourceClaims []resourcev1beta1.ResourceClaim
 		expected       []*types.NodeInfo
@@ -59,6 +60,28 @@ func TestGetK8sResources(t *testing.T) {
 							corev1.ResourceCPU:     resource.MustParse("3"),
 							corev1.ResourceMemory:  resource.MustParse("14Gi"),
 							corev1.ResourceStorage: resource.MustParse("90Gi"),
+						},
+					},
+				},
+			},
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "pod-1",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "node-1",
+						Containers: []corev1.Container{
+							{
+								Name: "container-1",
+								Resources: corev1.ResourceRequirements{
+									Requests: corev1.ResourceList{
+										corev1.ResourceCPU:    resource.MustParse("1"),
+										corev1.ResourceMemory: resource.MustParse("2Gi"),
+									},
+								},
+							},
 						},
 					},
 				},
@@ -157,9 +180,9 @@ func TestGetK8sResources(t *testing.T) {
 					NodeRole: "worker",
 					NodeCapacity: types.NodeCapacity{
 						TotalCPU:         resource.MustParse("4"),
-						AvailableCPU:     resource.MustParse("3"),
+						AvailableCPU:     resource.MustParse("2"),
 						TotalMemory:      resource.MustParse("16Gi"),
-						AvailableMemory:  resource.MustParse("14Gi"),
+						AvailableMemory:  resource.MustParse("12Gi"),
 						TotalStorage:     resource.MustParse("100Gi"),
 						AvailableStorage: resource.MustParse("90Gi"),
 					},
@@ -200,30 +223,36 @@ func TestGetK8sResources(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			client := fake.NewSimpleClientset()
 
-			for _, node := range tc.nodes {
-				_, err := client.CoreV1().Nodes().Create(context.Background(), &node, metav1.CreateOptions{})
+			for i := range tc.nodes {
+				_, err := client.CoreV1().Nodes().Create(context.Background(), &tc.nodes[i], metav1.CreateOptions{})
 				if err != nil {
 					t.Fatalf("failed to create node: %v", err)
 				}
 			}
-			for _, slice := range tc.resourceSlices {
+			for i := range tc.pods {
+				_, err := client.CoreV1().Pods(tc.pods[i].Namespace).Create(context.Background(), &tc.pods[i], metav1.CreateOptions{})
+				if err != nil {
+					t.Fatalf("failed to create pod: %v", err)
+				}
+			}
+			for i := range tc.resourceSlices {
 				// Initialize productName for gpu.nvidia.com driver
-				if slice.Spec.Driver == "gpu.nvidia.com" {
-					for i, dev := range slice.Spec.Devices {
-						if dev.Basic != nil {
-							if _, ok := dev.Basic.Attributes["productName"]; ok {
-								*slice.Spec.Devices[i].Basic.Attributes["productName"].StringValue = "NVIDIA GeForce RTX 5090"
+				if tc.resourceSlices[i].Spec.Driver == "gpu.nvidia.com" {
+					for j := range tc.resourceSlices[i].Spec.Devices {
+						if tc.resourceSlices[i].Spec.Devices[j].Basic != nil {
+							if _, ok := tc.resourceSlices[i].Spec.Devices[j].Basic.Attributes["productName"]; ok {
+								*tc.resourceSlices[i].Spec.Devices[j].Basic.Attributes["productName"].StringValue = "NVIDIA GeForce RTX 5090"
 							}
 						}
 					}
 				}
-				_, err := client.ResourceV1beta1().ResourceSlices().Create(context.Background(), &slice, metav1.CreateOptions{})
+				_, err := client.ResourceV1beta1().ResourceSlices().Create(context.Background(), &tc.resourceSlices[i], metav1.CreateOptions{})
 				if err != nil {
 					t.Fatalf("failed to create resource slice: %v", err)
 				}
 			}
-			for _, claim := range tc.resourceClaims {
-				_, err := client.ResourceV1beta1().ResourceClaims("").Create(context.Background(), &claim, metav1.CreateOptions{})
+			for i := range tc.resourceClaims {
+				_, err := client.ResourceV1beta1().ResourceClaims("").Create(context.Background(), &tc.resourceClaims[i], metav1.CreateOptions{})
 				if err != nil {
 					t.Fatalf("failed to create resource claim: %v", err)
 				}
@@ -235,21 +264,19 @@ func TestGetK8sResources(t *testing.T) {
 				t.Fatalf("GetK8sResources() error = %v, expectErr %v", err, tc.expectErr)
 			}
 
-			fmt.Printf("Node Details:\n")
-			for _, node := range got {
-				fmt.Printf("Node Name: %s\n", node.NodeName)
-				fmt.Printf("Node Role: %s\n", node.NodeRole)
-				fmt.Printf("Node Capacity: %+v\n", node.NodeCapacity)
-				fmt.Printf("Devices:\n")
-				for _, dev := range node.Devices {
-					fmt.Printf(" - Product Name: %s\n", dev.ProductName)
-					fmt.Printf("   Total Count: %d\n", dev.TotalCount)
-					fmt.Printf("   Available Count: %d\n", dev.AvailableCount)
-					fmt.Printf("   Memory: %s\n", dev.Memory.String())
-				}
-			}
-			if !reflect.DeepEqual(got, tc.expected) {
-				t.Errorf("GetK8sResources()\nGot:  %+v\nWant: %+v", got, tc.expected)
+			sort.Slice(got, func(i, j int) bool {
+				return got[i].NodeName < got[j].NodeName
+			})
+			sort.Slice(tc.expected, func(i, j int) bool {
+				return tc.expected[i].NodeName < tc.expected[j].NodeName
+			})
+
+			if diff := cmp.Diff(got, tc.expected,
+				cmp.Comparer(func(x, y resource.Quantity) bool {
+					return x.Equal(y)
+				}),
+			); diff != "" {
+				t.Errorf("mismatch (-got +want):\n%s", diff)
 			}
 		})
 	}

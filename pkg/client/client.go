@@ -18,6 +18,7 @@ type ResourceClient interface {
 	getResourceSlices(ctx context.Context) ([]resourcev1beta1.ResourceSlice, error)
 	getResourceClaims(ctx context.Context) ([]resourcev1beta1.ResourceClaim, error)
 	getNodes(ctx context.Context) ([]corev1.Node, error)
+	getPods(ctx context.Context) ([]corev1.Pod, error)
 	GetK8sResources(ctx context.Context) ([]*types.NodeInfo, error)
 }
 
@@ -63,6 +64,14 @@ func (c *resourceClient) getNodes(ctx context.Context) ([]corev1.Node, error) {
 	return list.Items, nil
 }
 
+func (c *resourceClient) getPods(ctx context.Context) ([]corev1.Pod, error) {
+	list, err := c.typedClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pods: %w", err)
+	}
+	return list.Items, nil
+}
+
 func (c *resourceClient) GetK8sResources(ctx context.Context) ([]*types.NodeInfo, error) {
 	nodes, err := c.getNodes(ctx)
 	if err != nil {
@@ -77,6 +86,33 @@ func (c *resourceClient) GetK8sResources(ctx context.Context) ([]*types.NodeInfo
 	resourceClaims, err := c.getResourceClaims(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	pods, err := c.getPods(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// calculate total requested resources per node
+	requestedResources := make(map[string]corev1.ResourceList)
+	for _, pod := range pods {
+		if pod.Spec.NodeName == "" {
+			continue
+		}
+		if _, ok := requestedResources[pod.Spec.NodeName]; !ok {
+			requestedResources[pod.Spec.NodeName] = make(corev1.ResourceList)
+		}
+		for _, container := range pod.Spec.Containers {
+			for resName, resQuant := range container.Resources.Requests {
+				if _, ok := requestedResources[pod.Spec.NodeName][resName]; !ok {
+					requestedResources[pod.Spec.NodeName][resName] = resQuant.DeepCopy()
+				} else {
+					existingQuant := requestedResources[pod.Spec.NodeName][resName]
+					existingQuant.Add(resQuant)
+					requestedResources[pod.Spec.NodeName][resName] = existingQuant
+				}
+			}
+		}
 	}
 
 	allocatedDevices := make(map[string]map[string]bool)
@@ -103,16 +139,33 @@ func (c *resourceClient) GetK8sResources(ctx context.Context) ([]*types.NodeInfo
 			}
 		}
 
+		// Calculate available resources
+		availableCPU := node.Status.Allocatable[corev1.ResourceCPU].DeepCopy()
+		availableMemory := node.Status.Allocatable[corev1.ResourceMemory].DeepCopy()
+		availableStorage := node.Status.Allocatable[corev1.ResourceStorage].DeepCopy()
+
+		if reqs, ok := requestedResources[node.Name]; ok {
+			if cpuReq, ok := reqs[corev1.ResourceCPU]; ok {
+				availableCPU.Sub(cpuReq)
+			}
+			if memReq, ok := reqs[corev1.ResourceMemory]; ok {
+				availableMemory.Sub(memReq)
+			}
+			if storageReq, ok := reqs[corev1.ResourceStorage]; ok {
+				availableStorage.Sub(storageReq)
+			}
+		}
+
 		nodeMap[node.Name] = &types.NodeInfo{
 			NodeName: node.Name,
 			NodeRole: role,
 			NodeCapacity: types.NodeCapacity{
 				TotalCPU:         node.Status.Capacity[corev1.ResourceCPU],
-				AvailableCPU:     node.Status.Allocatable[corev1.ResourceCPU],
+				AvailableCPU:     availableCPU,
 				TotalMemory:      node.Status.Capacity[corev1.ResourceMemory],
-				AvailableMemory:  node.Status.Allocatable[corev1.ResourceMemory],
+				AvailableMemory:  availableMemory,
 				TotalStorage:     node.Status.Capacity[corev1.ResourceStorage],
-				AvailableStorage: node.Status.Allocatable[corev1.ResourceStorage],
+				AvailableStorage: availableStorage,
 			},
 			Devices: []types.Device{},
 		}
